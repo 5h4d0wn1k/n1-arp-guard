@@ -4,22 +4,25 @@ Real-time ARP spoofing detection and blocking tool.
 
 ## Overview
 
-This project implements an ARP spoofing detection system that:
-- Monitors ARP requests/replies for spoofing
-- Detects duplicate IPs with different MACs
-- Alerts on ARP cache poisoning attempts
-- Auto-blocks attackers via iptables
-- Logs all suspicious activity to CSV
+This project implements an ARP spoofing detection system with a **pure standard-library
+packet engine** — it builds and parses real Ethernet + ARP frames by hand (no scapy
+dependency required). The core detection state machine runs fully unprivileged and
+deterministically, so it can be tested offline.
 
-## Features
+## What Works
 
-- **Real-time monitoring**: Sniff ARP packets on network interface
-- **Spoof detection**: Identify ARP cache poisoning attempts
-- **Auto-blocking**: Block attackers via iptables (optional)
-- **CSV logging**: Record all suspicious activity
-- **Statistics**: Track packet counts and attack metrics
+- **Real ARP packet construction/parsing** (`ARPFrame.build` / `ARPFrame.parse`) — builds
+  genuine 14-byte Ethernet + 28-byte ARP frames, round-trips through the parser.
+- **Spoof-decider state machine** (`ARPGuardDecider`) — flags a gateway address claimed by
+  a MAC other than the expected baseline; also detects any IP claimed by two MACs.
+- **Offline harness** (`--harness`) — feeds genuinely-built ARP frames (legit, spoofed
+  reply, spoofed request) through the real parser + decider with no privileges.
+- **Live sniffing** (`--live/--iface`) — real interface monitoring, gated behind an
+  explicit flag; requires root + scapy (optional).
 
 ## Installation
+
+No external dependencies for the core. Optional for live sniffing:
 
 ```bash
 pip install scapy
@@ -28,44 +31,48 @@ pip install scapy
 ## Usage
 
 ```bash
-# Basic monitoring
-sudo python3 arp_guard.py --interface eth0
+# Offline decider harness (no privileges, deterministic)
+python3 arp_guard.py --harness
 
-# With auto-blocking
-sudo python3 arp_guard.py --interface eth0 --block
+# Custom gateway / threshold
+python3 arp_guard.py --harness --gateway-ip 192.0.2.1 --gateway-mac 00:11:22:33:44:55 --threshold 2
 
-# With logging
-sudo python3 arp_guard.py --interface eth0 --log arp_log.csv
+# Live monitoring on a real interface (root + scapy)
+sudo python3 arp_guard.py --live --iface eth0 --gateway-ip 192.0.2.1
 ```
 
-## Example Output
+## Tests
 
+```bash
+python3 -m unittest discover -s tests
 ```
-=== N1 — ARP Guard ===
-Interface: eth0
-Auto-block: False
-Log file: arp_log.csv
 
-[SPOOF DETECTED] 192.168.1.100
-  Original MAC: aa:bb:cc:dd:ee:ff
-  New MAC:      11:22:33:44:55:66
-  Type:         REPLY
-  Count:        1
+## Live Lab Test Plan
 
-=== Statistics ===
-Total packets: 1234
-ARP requests:  890
-ARP replies:   344
-Suspicious:    5
-Blocked:       0
-Known hosts:   23
-```
+> Authorized own-lab use only. Use documented placeholders (192.0.2.x, 00:11:22:33:44:55).
+
+1. **Prepare a controlled lab**: two VM/container hosts, one acting as the "attacker".
+2. Have the attacker send ARP replies claiming `192.0.2.1` with a different MAC.
+3. Run `sudo python3 arp_guard.py --live --iface <lab-iface> --gateway-ip 192.0.2.1 --gateway-mac 00:11:22:33:44:55`.
+4. Confirm the spoofed replies are flagged with the expected vs observed MAC.
+5. Set `--threshold 2` and drive multiple spoofs; confirm the `[BLOCK]` decision line appears.
+6. Verify restore: when the attacker stops spoofing, the correct gateway MAC returns.
+
+## Metrics
+
+Core offline harness is deterministic and unit-tested:
+
+- ARP frame round-trip parse: PASS (7 unit tests)
+- Legit gateway reply: no false positive
+- Spoofed gateway reply: flagged (count increments, threshold-block reached)
+- Duplicate-IP two-MAC conflict: detected
+- Exit code: `0` on successful harness, `1` on failure
 
 ## Legal Disclaimer
 
 **IMPORTANT: Read before use.**
 
-This project is provided for **educational and authorized security testing purposes only**. 
+This project is provided for **educational and authorized security testing purposes only**.
 
 ### Authorization Requirements
 - You MUST have explicit written permission from the network owner before using this tool
@@ -88,16 +95,9 @@ This project is provided for **educational and authorized security testing purpo
 - Intercepting communications on networks you do not own
 - Attacking infrastructure without authorization
 - Any activity that violates applicable laws or regulations
-- Commercial use without proper licensing
 
 ### No Warranty
 This software is provided "AS IS" without warranty of any kind. The author is not responsible for any misuse or damage caused by this software.
-
-### Responsible Disclosure
-If you discover vulnerabilities using this tool, follow responsible disclosure practices:
-1. Report to the vendor/owner privately
-2. Allow reasonable time for remediation
-3. Do not exploit beyond proof of concept
 
 ## License
 
